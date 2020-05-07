@@ -1,0 +1,137 @@
+ 
+
+
+xval = function(x,data,N.xval=5,N.iter=100,prefix=substitute(x)) {
+# take a formula and Data Frame and perform cross validations
+
+if ( class(x) == "formula" ) f = x
+else f = as.list(x$call)$formula
+mse.test=numeric(N.iter*N.xval)
+mse.train = numeric(N.iter*N.xval)
+k=1
+for ( iter in 1:N.iter ) {
+grps= sample( (1:nrow(data)) %% N.xval+1 )
+for ( i in 1:N.xval ) { # for each group:
+data.test = data[grps==i,] #set it as test
+data.train = data[grps != i,] # set the rest as train
+M=lm(f, data=data.train,na.action="na.exclude")
+M.predicted=predict(M,newdata=data.test)
+r=M.predicted-data.test[,1]
+mse.test[k] = sum(r^2,na.rm=T)/sum(!is.na(r))
+mse.train[k] = sum(M$residuals^2,na.rm=T)/sum(!is.na(M$residuals))
+k=k+1
+}
+}
+l = list(MSE.train=mse.train,MSE.test=mse.test)
+if ( ! is.null(prefix) && prefix != "" ) {
+names(l) = paste(prefix,c(".MSE.train",".MSE.test"),sep="")
+}
+return( l )
+}
+
+
+predict.regsubsets <- function (object, newdata, id, ...){
+#apply to output from regsubsets to make predictions
+  form=as.formula(object$call [[2]])
+  mat=model.matrix(form,newdata)
+  coefi=coef(object,id=id)
+  xvars=names (coefi)
+  mat[,xvars] %*% coefi
+}
+
+
+
+km = function(x, K, Nmax=1000, movie=F, sleep=1) {
+#K-means algorithm which shows animation if movie=T
+clusters = sample(1:K,nrow(x),replace=T)
+cluster.centers=matrix(data=NA,ncol=ncol(x),nrow=K)
+distances=matrix(data=NA,nrow=nrow(x),ncol=K)
+if ( movie ) { colors=rainbow(K) }
+for ( i in 1:Nmax ) {
+for ( j in 1:K ) {
+if ( sum(clusters==j)== 0 ) { next }
+cluster.centers[j,] =
+apply(x[clusters==j, ],2,mean)
+distances[ , j] =
+apply(x,1,function(point) {
+sqrt(sum((point-cluster.centers[j,])^2))})
+}
+if ( movie ) {
+plot(x,pch=19,cex=0.8,col=colors[clusters],
+main=paste("N=",i,", centers",sep=""))
+points(cluster.centers,pch=19,cex=2,
+col="black",bg=colors)
+Sys.sleep(sleep)
+}
+new.clusters = apply(distances,1,which.min)
+if ( movie ) {
+plot(x,pch=19,cex=0.8,col=colors[new.clusters],
+main=paste("N=",i,", update",sep=""))
+points(cluster.centers,pch=19,cex=2,
+col="black",bg=colors)
+Sys.sleep(sleep)
+}
+if ( sum(new.clusters!=clusters) == 0 ) { break }
+clusters=new.clusters
+}
+cat(i, " iterations performed\n",sep="" )
+return(new.clusters)
+}
+
+
+# takes matrix of observations of p variables (points in
+# p-dimensional space: row=point), generates the
+# same number of p-dimensional points randomly and
+# uniformly scattered in the bounding box:
+lw.unif=function(m,K,N=20) {
+w=numeric(N)
+for ( i in 1:N ) {
+m.new=apply(m,2,function(x) {
+runif(length(x),min=min(x),max=max(x))
+})
+kf=kmeans(m.new,K,nstart=20,iter.max=20)
+w[i] = kf$tot.withinss
+}
+return( list(LW=mean(log(w)),SE=sd(log(w))/sqrt(N)) )
+}
+
+
+#measure goodness of clustering with hierarchical clustering method
+within=function(d,clust) {
+w=numeric(length(unique(clust)))
+for ( i in sort(unique(clust)) ) {
+members = d[clust==i,,drop=F]
+centroid = apply(members,2,mean)
+members.diff = sweep(members,2,centroid)
+w[i] = sum(members.diff^2)
+}
+return(w)
+}
+
+between=function(d,clust) {
+b=0
+total.mean = apply(d,2,mean)
+for ( i in sort(unique(clust)) ) {
+members = d[clust==i,,drop=F]
+centroid = apply(members,2,mean)
+b = b + nrow(members)*
+sum( (centroid-total.mean)^2 )
+}
+return(b)
+}
+
+
+#sort a table by max values in cols and rows. meant for contingency tables comparing clustering
+matrix.sort <- function(m) {
+if (nrow(m) != ncol(m)) { stop("Not diagonal") }
+if(is.null(rownames(m))) { rownames(m) = 1:nrow(matrix)}
+row.max = apply(m,1,which.max)
+if(any(table(row.max) != 1)) {
+col.max = apply(m,2,which.max)
+if ( any(table(col.max)!=1) ) {
+warning("Ties cannot be resolved")
+}
+return(m[,order(col.max)])
+}
+m[order(row.max),]
+}
