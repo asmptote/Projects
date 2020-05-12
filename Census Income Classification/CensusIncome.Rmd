@@ -1,0 +1,771 @@
+---
+title: "Census Income"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(randomForest)
+library(e1071)
+library(class)
+```
+
+# Introduction
+
+For this project, I develop classification models using several approaches and compare their performance on dataset ["Census Income"](https://archive.ics.uci.edu/ml/datasets/Census+Income) from UCI ML. I will try to predict whether a household income is greater than or less than $50,000. 
+
+# Data Summary, Univariate Analysis and Unsupervised Analysis
+
+Before performing multivariate supervised analysis, I explore and clean the data.
+
+##Read in Data
+
+The original data has been split up into training and test subsets. I combine the two subsets and rename columns and factors as necessary as well as read in the table of results found in the dataset description.
+
+```{r read in and format data}
+Tmp1Data=read.table("Datasets/adult.data",sep=",")
+Tmp2Data=read.table("Datasets/adult.test",sep=",") #manually removed header in data file
+DescPfrm=read.table("Datasets/adultresults.csv",sep=",",header = TRUE) #results from dataset description
+
+colnames(Tmp1Data)=c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hours-per-week","native-country","outcome")
+Tmp1Data=Tmp1Data[,-3]
+dim(Tmp1Data)
+summary(Tmp1Data)
+
+colnames(Tmp2Data)=c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hours-per-week","native-country","outcome")
+Tmp2Data=Tmp2Data[,-3]
+dim(Tmp2Data)
+summary(Tmp2Data)
+
+levels(Tmp2Data$outcome)
+levels(Tmp2Data$outcome)=c(" <=50K"," >50K")
+levels(Tmp2Data$outcome)
+
+
+censusDat=rbind(Tmp1Data,Tmp2Data)
+###########Subset of data for working only
+censusDat=censusDat[sample(c(FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,FALSE,TRUE),nrow(censusDat),replace=TRUE),]
+################
+dim(censusDat)
+summary(censusDat)
+
+table(edulvl=censusDat$education,educode=censusDat$`education-num`)
+#education-num is discrete and ordinal - will treat as continuous variable
+```
+
+I combined and formatted the split datasets and performed a basic summary of the data. Of note is that there are many more vectors with income below 50k than above. *capital-gain* and *capital-loss* are mostly zero with a few large quantities. There are also some categories which are very sparsely populated and *education-num* and *education* represent the same attribute. I disregard the "final weight" attribute and, because the dataset is large and some of the techniques I will apply are computationally intense, I have taken a sample of the combined dataset. 
+
+##Summarize Continuous Variables
+```{r visualize continuous vars}
+#boxplot of continuous variables
+old.par=par(mfrow=c(2,3))
+for ( clmns in c(1,4,10,11,12)) {
+boxplot(censusDat[[clmns]],
+main=names(censusDat)[clmns])
+}
+par(old.par)
+
+pairs(censusDat[,c(1,4,10,11,12)],pch=10,cex=0.3,col=alpha(c("orangered","chartreuse4")[censusDat$outcome],0.3))
+
+
+orderCG=order(censusDat$`capital-gain`)
+CGordered=censusDat$`capital-gain`[orderCG]
+MinNon0=which(CGordered != 0)[1]
+plot(CGordered,col=c("gray","green")[censusDat$outcome])
+abline(v=MinNon0)
+Non0s=which(censusDat$`capital-gain` != 0)
+t=censusDat$outcome[Non0s]
+summary(t)
+
+```
+
+*capital-gain*,*capital-loss* and *hours-per-week* all have narrow interquartile ranges and a significant number of outliers. I expect that for all the continuous variables, higher values will be more predictive of higher income - throughout the range of *age* and *education-num* and at the more extreme values for the others. This is further supported by the pairs scatterplots where the largest spreads are with combinations of *age*,*education-num* and *hours-per-week*. It does appear that the data will be classifiable but with a lot of overlap.
+
+It may be worth discretizing *capital-gain* and *capital-loss*. For the majority of the observations, these are $0$, but at least for *capital-gain* there is a much higher percentage over 50k when *capital-gain* is nonzero than in the rest of the population. It seems like most of the information we will get from these two attributes will be contained in whether they are $0$ or not. 
+
+## Summarize Categorical Variables
+```{r visualize categorical variables, fig.height=7,fig.width=13}
+#tables of categorical variables and outcome
+CatList=list()
+lst=1
+for (clmns in c(2,3,5,6,7,8,9,13)) {
+  CatList[[lst]]=table(censusDat[,clmns],censusDat$outcome)
+  lst=lst+2
+}
+
+#barcharts of categorical variables split by outcome
+CatList[[2]]=ggplot(censusDat,aes(censusDat[,2])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[2])+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+CatList[[4]]=ggplot(censusDat,aes(censusDat[,3])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[3])+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+CatList[[6]]=ggplot(censusDat,aes(censusDat[,5])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[5])+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+CatList[[8]]=ggplot(censusDat,aes(censusDat[,6])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[6])+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+CatList[[10]]=ggplot(censusDat,aes(censusDat[,7])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[7])
+CatList[[12]]=ggplot(censusDat,aes(censusDat[,8])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[8])
+CatList[[14]]=ggplot(censusDat,aes(censusDat[,9])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[9])
+CatList[[16]]=ggplot(censusDat,aes(censusDat[,13])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[13]) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+CatList
+
+```
+
+I plotted tables and bar charts of each categorical variable. The structure of the categories is similar between the under 50k class and the over 50k class. *workclass* has very few observations with "never-worked" and "without-pay". Most of the data is in "Pvt". Also, in *marital-status*, "Married-AF-spouse" is a very small group which seems like would not help with our predictive models. I may regroup these categories. In *occupation*, "Armed-Forces" is a very small group. Because there are so many occupations, it may be worth combing them by job type. For *race*, "white" is by far the most numerous category and seems to have a higher proportion in the over 50k group. *native-country* contains many countries, mostly with low numbers of observations. These should be combined - possibly by region, economic development or US/non US. Only Mexico and the Phillipines have an appreciable number of observations and are still dwarfed the the number from the United States - recategorizing as US/non US may be best. 
+
+##Clean Data
+```{r clean data}
+#remove rows with "?"
+for(clmns in c("workclass","occupation","native-country")) {
+if (dim(censusDat[which(censusDat[,clmns] == " ?"),])[1]!=0)
+{ censusDat = censusDat[-which(censusDat[,clmns] == " ?"),] } 
+}
+dim(censusDat)
+
+#rmv never worked and without pay from workclass
+if (dim(censusDat[which(censusDat$workclass == " Without-pay"),])[1]!=0)
+{ censusDat = censusDat[-which(censusDat$workclass == " Without-pay"),] }
+if (dim(censusDat[which(censusDat$workclass == " Never-worked"),])[1]!=0) 
+{ censusDat[-which(censusDat$workclass == " Never-worked"),] }
+
+#rmv armed forces from occupation
+if (dim(censusDat[which(censusDat$occupation == " Armed-Forces"),])[1]!=0)
+{ censusDat = censusDat[-which(censusDat$occupation == " Armed-Forces"),] }
+
+#For Marital Status, combine married-civ-spouse and married-af-spouse as together. Divorced, separated,married-spouse-absent as Separated
+levels(censusDat$`marital-status`)[6]="Separated"
+levels(censusDat$`marital-status`)[4]="Separated"
+levels(censusDat$`marital-status`)[3]="Together"
+levels(censusDat$`marital-status`)[2]="Together"
+levels(censusDat$`marital-status`)[1]="Separated"
+
+#Group United States and not United States from Native Country
+for (indx in (length(levels(censusDat$`native-country`)):1)) {
+  if (levels(censusDat$`native-country`)[indx]==" United-States" || levels(censusDat$`native-country`)[indx]==" Outlying-US(Guam-USVI-etc)") {
+    levels(censusDat$`native-country`)[indx]="Domestic"
+  } else {
+    levels(censusDat$`native-country`)[indx]="Foreign"
+  }
+}
+table(censusDat$`native-country`,censusDat$outcome)  
+
+#scale all continuous vars
+censcaleDat = censusDat
+censcaleDat[,1]=scale(censusDat[,1])
+censcaleDat[,4]=scale(censusDat[,4])
+censcaleDat[,10]=scale(censusDat[,10])
+censcaleDat[,11]=scale(censusDat[,11])
+censcaleDat[,12]=scale(censusDat[,12])
+
+#outliers in capital gains/Loss?
+ggplot(censcaleDat,aes(censcaleDat$'capital-gain')) +geom_histogram(bins=5)
+ggplot(censcaleDat,aes(censcaleDat$'capital-loss')) +geom_histogram(bins=4)
+
+```
+
+I removed any rows with missing values (coded "?") and removed the "never-worked" and "without-pay" categories from *workclass* and "Armed-Forces" from *occupation*. In *marital-status* I re-grouped "mareied-civ-spouse" and "married-af-spouse" as "Together" and "Divorced". I grouped "separated" and "married-spouse-absent" as "Separated". Finally, I grouped *native-country* as "Domestic" and "Foreign".
+
+Also, I created a new data set, *censcaleDat*, where the continuous variables are normalized. 
+
+I considered removing outliers from *capital-gain* and *capital-loss* but I don't think this is appropriate because the high values should be very predictive of high income. Also, I decided not to discretize these attributes. I do think it's likely that higher values are more predictive although I expect this will be a small impact.
+
+Finally, preschool in *education* has a very low number of datapoints. As a category it's small but it's meaningfull as an ordinal category. I plan on using *education-num* in place of *education* so I will not remove or re-group these.
+
+
+##Re-Summarize
+
+Now that some changes have been made I re-summarize the data in more detail.
+
+```{r summarize again cont}
+summary(censcaleDat)
+#boxplots for continuos variables
+old.par=par(mfrow=c(2,3))
+for ( clmns in c(1,4,10,11,12)) {
+boxplot(censcaleDat[[clmns]]~censcaleDat$outcome,
+main=names(censcaleDat)[clmns],col=c("orangered","chartreuse4"))
+}
+par(old.par)
+
+#pairs plot for continuous vars
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=0.5,col=alpha(c("orangered","chartreuse4")[censcaleDat$outcome],0.5),main="colored by Outcome")
+
+#country
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=0.5,col=alpha(c("brown","blue")[censcaleDat$`native-country`],0.7),main="colored by Native Country")
+#sex
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=0.5,col=alpha(c("pink","lightblue")[censcaleDat$sex],0.9),main="colored by Sex")
+#race
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=0.5,col=alpha(c(1:5)[censcaleDat$race],0.9),main="colored by Race")
+#occupation
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=0.5,col=alpha(c(1:15)[censcaleDat$occupation],0.9),main="colored by Occupation")
+#workclass
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=.75,col=alpha(c(2:10)[censcaleDat$workclass],0.9),main="colored by WorkClass")
+#Marital status
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=.75,col=alpha(c(1:4)[censcaleDat$`marital-status`],0.75),main="colored by Marital-Status")
+#relationship
+pairs(censcaleDat[,c(1,4,10,11,12)],pch=10,cex=.6,col=alpha(c(1:6)[censcaleDat$relationship],0.6),main="colored by Relationship")
+```
+
+```{r summarize again cat,fig.height=7,fig.width=13}
+#redo table and bar chart for marital status and native country
+CatList=list()
+lst=1
+for (clmns in c(5,13)) {
+  CatList[[lst]]=table(censusDat[,clmns],censusDat$outcome)
+  lst=lst+2
+}
+
+#barcharts of categorical variables split by outcome
+CatList[[2]]=ggplot(censusDat,aes(censusDat[,5])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[5])+ theme(axis.text.x = element_text(angle = 90, hjust = 1))
+CatList[[4]]=ggplot(censusDat,aes(censusDat[,13])) + geom_bar() + facet_wrap('outcome') + labs(title =names(censusDat)[13]) + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+CatList
+
+```
+
+
+After cleaning and scaling the data, I see, as expected, that *age* *education-num* and *hours-per-week* tend to have higher values for the higher income category. *education-num* has the clearest separation.
+
+I also combined scatterplots of the continuous variables colored by each categorical variable. As I mentioned earlier, the biggest spread of data is seen in plots with *age*, *education* and *hours-per-week*. I also see the best separation of clusters of the outcome within these predictors. Possibly this is because *capital-gain* and *capital-loss* are so compact. Also, for these continuous variables, I see more cluster separation for *native-country*, *occupation*, *workclass* and *marital status*. 
+
+For *native-country* we see many more US datapoints than non-US. "Foreign" seems to concentrate more at lower and higher education levels than in the middle. For *sex*, women seem to be more likely to have higher education and work less hours per week. *occupation* seems to have a relationship with *education-num*, *capital-gain* and *hours-per-week*. *workclass* has discernable relatioships to *age* where the oldest people are less likely to be "Pvt". Also, non "Pvt" tends to complete more education and there seems to be some relationship to *capital-gains* and *hours-per-week*.  *marital-status* has a clear relationship with *age*, as does *relationship*. 
+
+
+##PCA Analysis
+
+I visualize the scaled data using the top principal components to see along which attributes the most variation occurs and whether any useful structures emerge with these projections.
+
+```{r PCA}
+#confirm continuous variables are centered and scaled
+signif(apply(censcaleDat[,c(1,4,10,11,12)],2,mean),2)
+signif(apply(censcaleDat[,c(1,4,10,11,12)],2,var),2)
+
+#check correlations
+signif(cor(censcaleDat[,c(1,4,10,11,12)],method="pearson"),3) #linear
+signif(cor(censcaleDat[,c(1,4,10,11,12)],method="spearman"),3) #monotonic
+
+censcaleDatpca=model.matrix(~age+`education-num`+sex+`capital-gain`+`capital-loss`+`hours-per-week`+`native-country`,data=censcaleDat)[,-1] #include native-country and sex which are binary
+
+CensPCA=prcomp(censcaleDatpca) 
+
+old.par=par(mfrow=c(1,2))
+plot(CensPCA)
+
+Censpve=(CensPCA$sdev^2)/sum(CensPCA$sdev^2)
+plot(Censpve,xlab="Principal Component",ylab="Proportion of Variance Explained",ylim = c(0,1),type='b')
+par(old.par)
+
+
+biplot(CensPCA,xlabs=rep("o",nrow(CensPCA$x)))
+#biplot(CensPCA$x[,c(3,4)],CensPCA$rotation[,c(3,4)],xlabs=rep("o",nrow(CensPCA$x))) 
+
+
+CensPCA$rotation[,1:5]
+sort(CensPCA$rotation[,1],decreasing=TRUE)
+sort(CensPCA$rotation[,2],decreasing=TRUE)
+sort(CensPCA$rotation[,3],decreasing=TRUE)
+
+old.par=par(mfrow=c(2,1))
+for (PCn in 1:4) {
+  for (PCm in ((PCn+1):5)) {
+plot(CensPCA$x[,c(PCn,PCm)],col=alpha(c("orangered","chartreuse4")[censcaleDat$outcome],.8),pch=c(1,2)[censcaleDat$sex])
+  }}
+par(old.par)
+
+```
+
+
+I checked the correlations between continuous predictors and see that all are positively correlated with eachother except *capital-gain* and *capital-loss*. None of the correlations are very strong. The highest pearson result is *education-num* with *hours-per-week* at about $.153$. Other higher coorelations are *hours-per-week* with *age*, and *education-num* with *capital-gain*. Spearman is probably more appropriate here as it's unlikely these relationships are linear. *education-num* and *hours-per-week* are still the most correlated at $.1770$. *age* and *capital-gain* have higher correlation than with Pearson, and *hours-per-week* and *capital-gain* also show strong correlation under Spearman.
+
+I performed a principal component analysis, including all the continuous predictors and binary discrete predictors. I do not include categorical variables with more than two levels - I could create dummies but I think this would complicate the results. The PCA was performed on the normalized continous variables so that variance wouldn't be a function of the units of measurement. Notice that the categorical variables I did include, *sex* and *native-country*, do not have a large impact. This is partly related to the attributes having lower variance. I could have scaled the categorical variables as well but judging from the preliminary analysis I doubt that this will have much of an impact. 
+The first 5 principal components contain the majority of the variance, PC1 explains around $25$%. The separation present with PC2 is interesting. Looking at the biplot, it's driven by *capital-loss* and *capital-gain* where *education-num* and *hours-per-week* drives PC1 more. PC3 is driven primarily by *age*, PC4 by *hours-per-week* and PC5 by *education-num*
+
+I graphed the top 5 principal components against eachother and colored the points by outcome. I see some separation in PC1, PC2, PC4 and PC5. It is interesting that the plots with PC4 and PC5 look very similar but these components are not that similar based on rotations.
+
+As a result of this analysis, I think it was good not to discretize *capital-gain* and *capital-loss* and I think they will be strong predictors. *education-num* and *hours-per-week* will also be useful.
+
+
+##Univariate Assessment
+
+Before creating multivariate models, I would like to check each attribute on its own. I create logistic models to see each attirbute's impact and significance.
+
+$
+```{r univariate assess}
+censcaleDatdum=model.matrix(~age+workclass+`education-num`+`marital-status`+occupation+relationship+sex+race+sex+`capital-gain`+`capital-loss`+`hours-per-week`+`native-country`+outcome,data=censcaleDat)[,-1]
+censcaleDatdum=data.frame(censcaleDatdum)
+
+#continuous
+#age
+summary(glm(outcome..50K~age,data=censcaleDatdum,family=binomial))
+#education-num
+summary(glm(outcome..50K~X.education.num.,data=censcaleDatdum,family=binomial))
+#capital-gain
+summary(glm(outcome..50K~X.capital.gain.,data=censcaleDatdum,family=binomial))
+#capital-loss
+summary(glm(outcome..50K~X.capital.loss.,data=censcaleDatdum,family=binomial))
+#hours-per-week
+summary(glm(outcome..50K~X.hours.per.week.,data=censcaleDatdum,family=binomial))
+
+
+#categorical
+#workclass
+Log.workclass=glm(outcome..50K~workclass.Local.gov+workclass.Private+workclass.Self.emp.not.inc+workclass.Self.emp.inc+workclass.State.gov,data=censcaleDatdum,family=binomial)
+  summary(Log.workclass)
+
+  #####Fisher Exact
+#predict Prob
+Log.workclass.probs=predict(Log.workclass,type="response")
+#set assignment threshold of 0.5
+Log.workclass.pred=rep(0,length(Log.workclass.probs))
+Log.workclass.pred[Log.workclass.probs>.5]=1
+Log.workclass.pred=factor(Log.workclass.pred)
+#confusion table. rows are pred, cols actual
+Log.workclass.table=table(pred=Log.workclass.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.workclass.table)
+
+
+#marital-status
+Log.marital.status=glm(outcome..50K~X.marital.status.Together+X.marital.status..Never.married+X.marital.status..Widowed,data=censcaleDatdum,family=binomial)
+summary(Log.marital.status)
+
+  #####Fisher Exact
+#predict Prob
+Log.marital.status.probs=predict(Log.marital.status,type="response")
+#set assignment threshold of 0.5
+Log.marital.status.pred=rep(0,length(Log.marital.status.probs))
+Log.marital.status.pred[Log.marital.status.probs>.5]=1
+Log.marital.status.pred=factor(Log.marital.status.pred)
+levels(Log.marital.status.pred)[2]="1" #on some runs, never get over p=0.5
+#confusion table. rows are pred, cols actual
+Log.marital.status.table=table(pred=Log.marital.status.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.marital.status.table)
+
+
+#occupation
+Log.occupation=glm(outcome..50K~occupation.Adm.clerical + occupation.Craft.repair + occupation.Exec.managerial + occupation.Farming.fishing + occupation.Handlers.cleaners + occupation.Machine.op.inspct + occupation.Other.service + occupation.Priv.house.serv + occupation.Prof.specialty + occupation.Protective.serv + occupation.Sales + occupation.Tech.support + occupation.Transport.moving,data=censcaleDatdum,family=binomial)
+summary(Log.occupation)
+
+#####Fisher Exact
+#predict Prob
+Log.occupation.probs=predict(Log.occupation,type="response")
+#set assignment threshold of 0.5
+Log.occupation.pred=rep(0,length(Log.occupation.probs))
+Log.occupation.pred[Log.occupation.probs>.5]=1
+Log.occupation.pred=factor(Log.occupation.pred)
+levels(Log.occupation.pred)[2]="1" #on some runs, never get over p=0.5
+#confusion table. rows are pred, cols actual
+Log.occupation.table=table(pred=Log.occupation.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.occupation.table)
+
+#relationship
+Log.relationship=glm(outcome..50K~relationship.Not.in.family + relationship.Other.relative + relationship.Own.child + relationship.Unmarried + relationship.Wife,data=censcaleDatdum,family=binomial)
+summary(Log.relationship)
+
+#####Fisher Exact
+#predict Prob
+Log.relationship.probs=predict(Log.relationship,type="response")
+#set assignment threshold of 0.5
+Log.relationship.pred=rep(0,length(Log.relationship.probs))
+Log.relationship.pred[Log.relationship.probs>.5]=1
+Log.relationship.pred=factor(Log.relationship.pred)
+levels(Log.relationship.pred)[2]="1" #on some runs, never get over p=0.5
+#confusion table. rows are pred, cols actual
+Log.relationship.table=table(pred=Log.relationship.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.relationship.table)
+
+#race
+Log.race=glm(outcome..50K~race.Asian.Pac.Islander+race.Black+race.Other+race.White,data=censcaleDatdum,family=binomial)
+summary(Log.race)
+
+#####Fisher Exact
+#predict Prob
+Log.race.probs=predict(Log.race,type="response")
+#set assignment threshold of 0.5
+Log.race.pred=rep(0,length(Log.race.probs))
+Log.race.pred[Log.race.probs>.5]=1
+Log.race.pred=factor(Log.race.pred)
+levels(Log.race.pred)[2]="1" #on some runs, never get over p=0.5
+#confusion table. rows are pred, cols actual
+Log.race.table=table(pred=Log.race.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.race.table)
+
+#sex
+Log.sex=glm(outcome..50K~sex.Male,data=censcaleDatdum,family=binomial)
+summary(Log.sex)
+
+#####Fisher Exact
+#predict Prob
+Log.sex.probs=predict(Log.sex,type="response")
+#set assignment threshold of 0.5
+Log.sex.pred=rep(0,length(Log.sex.probs))
+Log.sex.pred[Log.sex.probs>.5]=1
+Log.sex.pred=factor(Log.sex.pred)
+levels(Log.sex.pred)[2]="1" #on some runs, never get over p=0.5
+#confusion table. rows are pred, cols actual
+Log.sex.table=table(pred=Log.sex.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.sex.table)
+
+#native-country
+Log.native=glm(outcome..50K~X.native.country.Domestic,data=censcaleDatdum,family=binomial)
+summary(Log.native)
+ 
+#####Fisher Exact
+#predict Prob
+Log.native.probs=predict(Log.native,type="response")
+#set assignment threshold of 0.5
+Log.native.pred=rep(0,length(Log.native.probs))
+Log.native.pred[Log.native.probs>.5]=1
+Log.native.pred=factor(Log.native.pred)
+levels(Log.native.pred)[2]="1" #on some runs, never get over p=0.5
+#confusion table. rows are pred, cols actual
+Log.native.table=table(pred=Log.native.pred,resp=censcaleDatdum$outcome..50K)
+fisher.test(Log.native.table)
+
+
+```
+$
+
+I created a new data frame, *censcaleDatdum*, which includes dummy variables for the categorical data. I left out *education* but included *education-num*. For the continuous variables, all have small p values. *capital-gain* has the largest coefficient followed by *education-num*. *capital-loss* has the smallest.
+
+For the categorical variables, "self employed" has a relatively large positive effect on income and "privately employed" a relatively large negative effect. marital status "together" also has a strong positive effect while "separated" and "never married" have negative effects. In *occupation*, "adm-clerical", "farming-fishing", "handlers-cleaners", "machine-op-inspct", and "other-service" all have a relatively large negative effect while "exec-managerial" and "Prof-specialty"" have high positive effects. For *marital-status*, "not-in-family", "other-relative", "own-child", and "unmarried" all have strong negative coefficients. "Amer-Indian-Eskimo" has a strong negative coefficient while "Asian-pac-Islander" and "white" have fairly strong positive coefficients. "Female" has a strong negative and "male" has a strong positive coeffienct. Finally, "Foreign" from *native-country* has a strong negative coefficient.
+
+However, when making contingency tables using threshold of 0.5, all datapoints are sorted into the  ">50k" category for all categorical attributes except *workclass*. the model built with *workclass* is significant according to the Fisher exact test, but the others are not. The prior probability is heavily weighted toward the under 50k category but it's possible that some of these attributes will be useful when combined with others.
+
+# Logistic regression
+
+Now I develop a logistic regression model of household income as a function of multiple predictors and determine which variables are significantly associated with the outcome. I test model performance and compare it to the performance of other methods reported in the dataset description.
+
+
+```{r Logistic Regression}
+Logist.all=glm(as.factor(outcome..50K)~.,data=censcaleDatdum,family=binomial)
+summary(Logist.all)
+
+model.atts=formula("as.factor(outcome..50K)~age+X.education.num.+X.capital.gain.+X.capital.loss.+X.hours.per.week.+workclass.Local.gov+workclass.Private+workclass.Self.emp.not.inc+workclass.Self.emp.inc+workclass.State.gov+X.marital.status.Together+X.marital.status..Never.married+X.marital.status..Widowed+occupation.Adm.clerical + occupation.Craft.repair + occupation.Exec.managerial + occupation.Farming.fishing + occupation.Handlers.cleaners + occupation.Machine.op.inspct + occupation.Other.service + occupation.Priv.house.serv + occupation.Prof.specialty + occupation.Protective.serv + occupation.Sales + occupation.Tech.support + occupation.Transport.moving+relationship.Not.in.family + relationship.Other.relative + relationship.Own.child + relationship.Unmarried + relationship.Wife+sex.Male")
+#excluding race and native-country as don't pass the z test in the model
+
+Logist.some=glm(model.atts,data=censcaleDatdum,family=binomial) #.05 p value
+summary(Logist.some)
+
+#predicts P(clss=1|Xs)
+log.some.probs=predict(Logist.some,type="response")
+#set class 1 assignment threshold of 0.5
+log.some.pred=rep(0,length(log.some.probs))
+log.some.pred[log.some.probs>.5]=1
+log.some.pred=factor(log.some.pred)
+#confusion table. rows are pred, cols actual
+log.some.table=table(pred=log.some.pred,resp=censcaleDatdum$outcome..50K)
+log.some.table
+
+
+#if call 0 the "negative" outcome and 1 the "positive" outcome 
+#training error - missclassified/total
+1-(sum(diag(log.some.table))/sum(log.some.table))
+#Training sensitivity - TP/P, true pos rate
+log.some.table[2,2]/sum(log.some.table[,2])
+#training Specificity - TN/N, false pos rate
+log.some.table[1,1]/sum(log.some.table[,1])
+
+
+#test performance
+
+oldw <- getOption("warn") #turn off warnings 
+options(warn = -1)
+
+dfTmp <- NULL
+nTries <- 25
+for ( iTry in 1:nTries ) {
+#split data
+s=sample(c(TRUE,FALSE),nrow(censcaleDatdum),replace = TRUE)
+censcaleDatdum.test<-NULL
+censcaleDatdum.train<-NULL
+censcaleDatdum.train=censcaleDatdum[s,]
+censcaleDatdum.test=censcaleDatdum[!s,]
+
+log.fit=glm(model.atts,data=censcaleDatdum.train,family=binomial)
+#predict logistic
+log.probs=predict(log.fit,newdata=censcaleDatdum.test,type="response")
+log.pred=rep(0,length(log.probs))
+log.pred[log.probs>.5]=1 #set class 1 assignment threshold of 0.5
+log.pred=factor(log.pred)
+#confusion table
+t=table(log.pred,censcaleDatdum.test$outcome)
+#Testing error rate
+ER=(t[1,2]+t[2,1])/nrow(censcaleDatdum.test)
+#Testing sensitivity
+TPR=t[2,2]/(t[1,2]+t[2,2])
+#testing Specificity
+TNR=t[1,1]/(t[1,1]+t[2,1])
+dfTmp=rbind(dfTmp,data.frame(sim=iTry,method="Logistic",metric=c("Error","Sens","Spec"),value=c(ER,TPR,TNR)))
+}
+
+options(warn = oldw)
+
+ggplot(dfTmp,aes(x=factor(metric),y=value,colour=metric)) + geom_boxplot()
+
+signif(mean(dfTmp[dfTmp$metric=="Error","value"]),4)
+signif(mean(dfTmp[dfTmp$metric=="Sens","value"]),4)
+signif(mean(dfTmp[dfTmp$metric=="Spec","value"]),4)
+
+DescPfrm
+
+```
+
+I ran a logistic model for all variables but *education*, and all of them but *race* and *native-country* have at least one of their dummy variables with significant p-values (although it's possible the parts of the dummies bundled into the intercept would have been significant). It is interesting that the largest coefficient is *marital-status's* "Together". The next largest is *capital-gain* then *relationship's* "not-in-family" and "Wife". It's also interesting that the *workclass* dummy variables have high p-values even though it was the only categorical univariate model that showed significance in the Fisher Exact test. 
+
+I re-ran the logistic model, excluding *native-country* and *race*. Then, using a $0.5$ threshold, It has an error around $16$%, predicted about $60$% of the high income category correctly and about $90$% of low income category correctly. Depending on our purpose it may be useful to lower the threshold to increase the true positive rate.
+I tested a model by splitting the data into training and test sets 25 times and got similar test results. The dataset description provides their model performances. My Logistic model performs simlar to Naive-Bayes, Voted ID3 and C4.5.
+
+# Random Forest Classification
+
+Next I develop a random forest model of the categorized income where I summarize variable importance and model performance and compare it to the results from logistic regression as well as to other methods reported in the dataset description. 
+
+```{r Random Forest}
+
+RF.all=randomForest(censusDat[,-c(3,14)],censusDat$outcome,importance=TRUE)
+RF.all
+varImpPlot(RF.all) 
+#gini is avg of differences between every pair divided by total mean. In this case coefficient of 1 means perfectly sorted
+
+
+#test performance
+nTries <- 25
+OOBTest <- NULL
+for ( iTry in 1:nTries ) {
+#split data 
+s <- sample(c(FALSE,TRUE),nrow(censusDat),replace=TRUE)
+rfRes <- randomForest(censusDat[s,-c(3,14)],censusDat$outcome[s],importance=TRUE)
+# store OOB error
+OOB=rfRes$err.rate[[nrow(rfRes$err.rate),1]]
+#predict RF and table
+t <- table(predict(rfRes,newdata=censusDat[!s,-c(3,14)]),censusDat$outcome[!s])
+#Testing error rate
+ER=(t[1,2]+t[2,1])/sum(t)
+#Testing sensitivity
+TPR=t[2,2]/(t[1,2]+t[2,2])
+#testing Specificity
+TNR=t[1,1]/(t[1,1]+t[2,1])
+#compare test error with OOB error
+OOBTest=rbind(OOBTest,data.frame(sim=iTry,measure=c("OOBErr","TestErr"),value=c(OOB,ER)))
+#add to compare to logistic
+dfTmp=rbind(dfTmp,data.frame(sim=iTry,method="RF",metric=c("Error","Sens","Spec"),value=c(ER,TPR,TNR)))
+}
+
+ggplot(dfTmp[dfTmp$method=="RF",],aes(x=factor(metric),y=value,colour=metric)) + geom_boxplot()
+
+ggplot(OOBTest,aes(x=sim,y=value,colour=measure)) +geom_line()
+
+signif(mean(dfTmp[dfTmp$metric=="Error" & dfTmp$method=="RF","value"]),4)
+signif(mean(dfTmp[dfTmp$metric=="Sens" & dfTmp$method=="RF","value"]),4)
+signif(mean(dfTmp[dfTmp$metric=="Spec" & dfTmp$method=="RF","value"]),4)
+
+DescPfrm
+```
+
+I trained a Random Forest model on all attributes but *education*. The result looks fairly good. *capital-gain*,*occupation*, and *education-num* are the three most important attributes measured by mean decrease in accuracy. Using gini index it's *age*,*occupation* and *education-num*. *sex*,*race* and *native-country* are least important under both measures. In the Logistic model, *native-country* and *race* were also not important and while *sex* was significant, it did not have a strong impact on the model. *capital-gain*, *occupation*, *education-num*, and *age* are all significant in the Logistic model. *capital-gain* as well as some of the *occupation* categories have some of the highest coefficients. So for the most part the variable importance is similar between Random Forest and Logistic. 
+
+Again, I resampled 25 times to create test results. The average error was around $0.15$, Sensitivity around $0.60$ and specificity around $0.90$
+
+I also compared the out of the bag (OOB) error to test error. OOB error is determined by predicting each observation using all trees that didn't include the observation during traning. This approach is similar to cross-validation so I would expect the errors to be simlar and they are.
+
+These error results are slightly better than the Logistic Regression model and comparable to C4.5 rules, HOODG and OC1 methods from the dataset description. 
+
+
+# Support Vector Machines
+
+I develop a Support Vector Machines (SVM) model, summarize its performance and compare it to the performance of other methods reported in the dataset description.
+
+```{r SVM}
+
+ #see which kernel yields best results
+tune.lin = tune(svm,model.atts,data=censcaleDatdum,kernel="linear",scale=FALSE,ranges=list(cost=c(.5,1,2,5)))
+  summary(tune.lin)
+tune.rad = tune(svm,model.atts,data=censcaleDatdum,kernel="radial",scale=FALSE,ranges=list(cost=c(.5,1,2,5),gamma=c(.01,.1,1)))
+  summary(tune.rad)
+tune.poly = tune(svm,model.atts,data=censcaleDatdum,kernel="polynomial",scale=FALSE,ranges=list(cost=c(.5,1,2,5),degree=c(2,3,4)))
+  summary(tune.poly)              
+
+#Determine which parameters to consider
+tune.rad = tune(svm,model.atts,data=censcaleDatdum,kernel="radial",scale=FALSE,ranges=list(cost=c(2,2.5,5,8,10),gamma=c(.005,.01,.02,.05,.1)))
+  summary(tune.rad)
+  
+plot(tune.rad)   
+summary(tune.rad$best.model)
+
+#plot 2d 
+old.par=par(mfrow=c(2,2))
+plot(tune.rad$best.model,censcaleDatdum,X.education.num.~X.capital.loss.)
+plot(tune.rad$best.model,censcaleDatdum,age~X.capital.gain.)
+plot(tune.rad$best.model,censcaleDatdum,X.hours.per.week.~X.capital.gain.)
+plot(tune.rad$best.model,censcaleDatdum,X.education.num.~age)
+par(old.par)
+#seems driven by capital gain and loss. even though normalized has the highest range
+
+
+SVMSamp=data.frame()
+#resample
+for (iTry in 1:20) {
+  #split dataset into test and train
+  bTrain <- sample(c(FALSE,FALSE,TRUE),nrow(censcaleDatdum),replace=TRUE)
+  # tune svm to train data, obtain test error:
+  tmpTune = tune(svm,model.atts,data=censcaleDatdum[bTrain,],kernel="radial",scale=FALSE,ranges=list(cost=c(2,2.5,5),gamma=c(.01,.02,.05)))
+  
+  Tmpcost=tmpTune$best.parameters$cost
+  Tmpgam=tmpTune$best.parameters$gamma
+
+  tmpTbl <- table(censcaleDatdum$outcome..50K[!bTrain],predict(tmpTune$best.model,newdata=censcaleDatdum[!bTrain,]))
+  #Error - testing error rate 1-(TP+TN)/(all obs)
+  ER=1-sum(diag(tmpTbl))/sum(tmpTbl)
+  #Testing sensitivity
+  TPR=tmpTbl[2,2]/(tmpTbl[1,2]+tmpTbl[2,2])
+  #testing Specificity
+  TNR=tmpTbl[1,1]/(tmpTbl[1,1]+tmpTbl[2,1])
+  
+SVMSamp=rbind(SVMSamp,data.frame(cost=Tmpcost,gamma=Tmpgam,err=ER))
+#add to compare to logistic and RF
+dfTmp=rbind(dfTmp,data.frame(sim=iTry,method="SVM",metric=c("Error","Sens","Spec"),value=c(ER,TPR,TNR)))
+}
+summary(SVMSamp)
+ggplot(SVMSamp, aes(x=as.factor(cost),y=err,col=c(as.factor(gamma)))) + 
+  geom_jitter()
+
+ggplot(dfTmp[dfTmp$method=="SVM",],aes(x=factor(metric),y=value,colour=metric)) + geom_boxplot()
+
+
+summary(dfTmp[dfTmp$metric=="Error" & dfTmp$method=="SVM","value"])
+
+
+signif(mean(dfTmp[dfTmp$metric=="Error" & dfTmp$method=="SVM","value"]),4)
+signif(mean(dfTmp[dfTmp$metric=="Sens" & dfTmp$method=="SVM","value"]),4)
+signif(mean(dfTmp[dfTmp$metric=="Spec" & dfTmp$method=="SVM","value"]),4)
+
+DescPfrm
+```
+
+For creating Support Vector Machine models, I used the normalized dataset with dummy variables. First, I used the tune function with a range of parameters to choose between a radial, polynomial or linear kernel. Radial seemed to provide the best cross-validated results. I then tuned the SVM again with a radial kernel on more parameters to pick the few that would likely give the best results. 
+
+I summarized and plotted the best result from this second tune. The decision boundary is visible with *capital-gain* and *capital-loss* but not with other combinations of continuous variables.
+
+Finally, I used the pared down list of parameters to resample $20$ times to train and compute test errors. The error is around $15.25$. These numbers are similar to Logistic which makes sense because SVM is a related modeling method. It has comparable error to the dataset description's Oc1,C4.5 rules, and Voted ID3 ($0.6$). It doesn't perform quite as well as Random Forest. SVM works best for almost separable data which is not what we're working with, Random Forest's use of Bagging can be more flexible in sorting clusters which overlap a lot.
+
+# Variable Importance in SVM
+
+The Random Forest function I used has built in measures of variable importance. The mean decrease accuracy is a measure of the decrease in model performance upon randomization of the values of an attribute. I would like to compare the variable importance for each model so I create a similar approach for SVM. 
+
+
+```{r svm var import}
+#measure decrease in performance when just randomizing that attribute
+
+#create a randomized data frame
+rndm.censcaleDat=censcaleDat
+for (cols in 1:(ncol(censcaleDat)-1)) {
+rndm.censcaleDat[,cols]= sample(censcaleDat[,cols],nrow(censcaleDat),replace=TRUE)
+}
+#create dummies from randomized data frame
+rndm.censcaleDatdum=model.matrix(~age+workclass+`education-num`+`marital-status`+occupation+relationship+sex+race+sex+`capital-gain`+`capital-loss`+`hours-per-week`+`native-country`+outcome,data=rndm.censcaleDat)[,-1]
+rndm.censcaleDatdum=data.frame(rndm.censcaleDatdum)
+
+#Loop and measure difference in accuracy
+AccuDecrease=data.frame()
+MeanDecrease=data.frame()
+ColList=list("age"=1,"education-num"=10,"capitalgain"=38,"capitalloss"=39,"hoursperweek"=40,"workclass"=c(3,5:8),"maritalstatus"=c(11:13),"occupation"=c(14,16:27),"relationship"=c(28:32),"sex"=33)
+
+for(Cols in c("age","education-num","capitalgain","capitalloss","hoursperweek","workclass","maritalstatus","occupation","relationship","sex")) {
+  
+for (iTry in 1:12) {
+  
+  #split dataset into test and train
+  bTrain <- sample(c(FALSE,TRUE),nrow(censcaleDatdum),replace=TRUE)
+  
+   # Full data Fit and test
+  tmpFit <- svm(model.atts,data=censcaleDatdum[bTrain,],kernel="radial",cost=8,gamma=.02,scale=FALSE)
+  tmpTbl <- table(censcaleDatdum$outcome..50K[!bTrain],predict(tmpFit,newdata=censcaleDatdum[!bTrain,]))
+  
+  #with random data Fit and test
+  rndmTmpData=cbind(rndm.censcaleDatdum[,ColList[[Cols]]],censcaleDatdum[,-ColList[[Cols]]])
+  colnames(rndmTmpData)[1:length(ColList[[Cols]])]=colnames(rndm.censcaleDatdum)[ColList[[Cols]]]
+  
+ rndm.tmpFit <-svm(model.atts,data=rndmTmpData[bTrain,],kernel="radial",cost=8,gamma=.02,scale=FALSE)
+ rndm.tmpTbl <- table(censcaleDatdum$outcome..50K[!bTrain],predict(tmpFit,newdata=rndmTmpData[!bTrain,]))
+ 
+  Acc=sum(diag(tmpTbl))/sum(tmpTbl)
+  Acc.rndm=sum(diag(rndm.tmpTbl))/sum(rndm.tmpTbl)
+  
+AccuDecrease=rbind(AccuDecrease,data.frame(sim=iTry,Attribute=Cols,TrueAcc=Acc,RndmAcc=Acc.rndm,Decrease=Acc-Acc.rndm))
+
+} 
+  MeanDecrease=rbind(MeanDecrease,data.frame(Attribute=Cols,MeanDecreaseAccuracy=mean(AccuDecrease[AccuDecrease$Attribute==Cols,"Decrease"])))
+
+  }
+shuffle=order(MeanDecrease$MeanDecreaseAccuracy)
+
+
+ggplot(MeanDecrease, aes(x=MeanDecreaseAccuracy,y=reorder(Attribute,MeanDecreaseAccuracy))) + 
+  geom_point() + ylab("Atribute")
+
+sum(MeanDecrease$MeanDecreaseAccuracy)
+signif(summary(censcaleDat$outcome)[[2]]/sum(summary(censcaleDat$outcome)),4)
+```
+
+
+To test variable importance I created a dataframe where each field was individually recreated through bootstrapping. I then ran 12 iterations for each attribute where I measured the difference between test model accuracy using a full model and a model with the attribute randomized across each observation.
+
+*marital-status*, *capital-gain* and *occupation* are the three attributes which saw the largest decrease in mean accuracy. *sex* and *workclass* had the lowest decrease. *capital-gain* and *occupation* are also important variable in Random Forest and Logistic and *sex* and *workclass* are close to the bottom in all those as well. While *marital-status* is a little above the middle of importance for Random Forest, it is important for Logsitic, where "Together" has a very low p-value and the highest coefficient.
+
+It is surprising to me that mean decrease accuracy is never more than 5 percentage points. However, this makes sense considering that if all datapoints are classified as under 50k, this simple method would already be over $75$% accurate. My models only improve on this basic method by around 10 percentage points. 
+
+
+# Compare Performance of Logistic Regression, Random Forest and SVM models
+
+```{r compare}
+
+ggplot(dfTmp,aes(x=method,y=value,colour=method)) + geom_boxplot() + facet_wrap("metric")
+
+
+summary(dfTmp[dfTmp$metric=="Error" & dfTmp$method=="Logistic","value"])
+summary(dfTmp[dfTmp$metric=="Error" & dfTmp$method=="RF","value"])
+summary(dfTmp[dfTmp$metric=="Error" & dfTmp$method=="SVM","value"])
+
+```
+
+Random Forest has the lowest error followed by SVM but they are all simlar. These errors were very stable over multiple trials. SVM has the highest sensitivity which could be a nice feature - the error is still very low but it's able to sort more of the vectors with income greater than 50k accurately. On the other hand it also has a corresponding lower specificty than the other two models. Sensitivity is less stable over 25 trials than error or specifity which is likely because there is less data in the over 50k category.
+
+# KNN model
+
+Finally, I develop a KNN model for this data and evaluate its performance for different values of $k$ and see how it compares to the other methods attempted.
+
+```{r KNN}
+
+KNNSamp <- data.frame()
+for (iTry in 1:25) {
+  #split dataset into test and train
+  bTrain <- sample(c(FALSE,TRUE),nrow(censcaleDatdum),replace=TRUE)
+  # use tune on training data to find best k
+ tmptune=tune.knn(censcaleDatdum[,-ncol(censcaleDatdum)],as.factor(censcaleDatdum$outcome..50K),k=c(20,40,100,350))
+ ksize=tmptune$best.parameters  
+ # use optimal k to classify test data
+ TmpKNNfit=knn(censcaleDatdum[bTrain,-ncol(censcaleDatdum)],censcaleDatdum[!bTrain,-ncol(censcaleDatdum)],as.factor(censcaleDatdum$outcome..50K[bTrain]),k=ksize)
+ tmpTbl = table(TmpKNNfit,censcaleDatdum$outcome..50K[!bTrain])  
+ #Error
+  ER=1-sum(diag(tmpTbl))/sum(tmpTbl)
+  #Testing sensitivity
+  TPR=tmpTbl[2,2]/(tmpTbl[1,2]+tmpTbl[2,2])
+  #testing Specificity
+  TNR=tmpTbl[1,1]/(tmpTbl[1,1]+tmpTbl[2,1])
+  
+  #store classification error
+  KNNSamp<- rbind(KNNSamp,data.frame(k=ksize,err=ER))
+  
+  #add to compare to logistic RF and SVM
+dfTmp=rbind(dfTmp,data.frame(sim=iTry,method="KNN",metric=c("Error","Sens","Spec"),value=c(ER,TPR,TNR)))
+}
+
+ggplot(KNNSamp, aes(x=as.factor(k),y=err)) + 
+  geom_boxplot()
+
+ggplot(dfTmp,aes(x=method,y=value,colour=method)) + geom_boxplot() + facet_wrap("metric")
+
+DescPfrm
+```
+
+KNN assigns membership using Euclidean distance so I used normalized continous variables and categorical variables converted to dummies. I resampled 25 times, using the tune function to choose the best cross validated number of neighbors. $k=20$ and $k=40$ were most commonly the best models. The error is between $0.170$ and $0.185$. This is comparable to T2, and 1R in the dataset description errors which is better than the two KNN models listed which have errors around $.20$. KNN does not perform well on this dataset. It has the highest error and lowest sensitivity. 
+
+
