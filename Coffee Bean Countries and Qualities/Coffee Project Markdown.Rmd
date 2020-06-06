@@ -1,0 +1,378 @@
+---
+title: "Coffee Quality Data"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(fmsb)
+library(reshape2)
+library(ggplot2)
+library(stats4)
+library(moments)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Aurora (Yutian) Qiu <br>
+Alex Marshall<br>
+Dataset: https://github.com/jldbc/coffee-quality-database <br>
+Original data source: https://database.coffeeinstitute.org
+
+# Introduction
+We explore a dataset scraped from Coffee Institute's Coffee Quality Database. Our dataset consists of reviewed features of different coffees as well as bean and farm metadata for $1312$ sources of Arabica beans from around the world. We explore bean attributes and growing conditions across different countries, and whether the bean attributes can be used to infer the beans' provenance.
+
+# Dataset
+```{r load and clean, echo=FALSE}
+data <- read.csv("arabica.csv")
+
+index<-which(!is.na(data$Country.of.Origin) & !is.na(data$Processing.Method)& !is.na(data$Aroma)&
+               !is.na(data$Flavor)& !is.na(data$Aftertaste)& !is.na(data$Acidity) & 
+               !is.na(data$Body) & !is.na(data$Balance) & !is.na(data$altitude_mean_meters))
+Country = data$Country.of.Origin[index] 
+Year = data$Harvest.Year[index] 
+Method = data$Processing.Method[index] 
+Aroma = data$Aroma[index] 
+Flavor = data$Flavor[index] 
+Aftertaste = data$Aftertaste[index] 
+Acidity = data$Acidity[index] 
+Body = data$Body[index] 
+Balance = data$Balance[index] 
+Altitude = data$altitude_mean_meters[index] 
+Coffee <- data.frame(Country, Year, Method, Aroma, Flavor, Aftertaste, Acidity, Body, Balance, Altitude)
+str(Coffee)
+```
+
+
+
+# Ethiopian Beans: Aroma, Altitude and Processing Method
+
+We start by exploring some basics of the dataset. The average aroma score of coffee beans in Ethoipia from the last five years has been very stable at around $8$. If year has a small or no impact on coffee qualities and has little noise, we can group years together when looking at other attributes.
+
+```{r Ethiopia Aroma, echo=FALSE}
+Ethiopia <- Coffee[Coffee$Country == "Ethiopia",]
+Aroma <- c(mean(Ethiopia$Aroma[Ethiopia$Year == 2012]),mean(Ethiopia$Aroma[Ethiopia$Year == 2013]),mean(Ethiopia$Aroma[Ethiopia$Year == 2014]),
+                mean(Ethiopia$Aroma[Ethiopia$Year == 2015]), mean(Ethiopia$Aroma[Ethiopia$Year == 2016]),mean(Ethiopia$Aroma[Ethiopia$Year == 2017]))
+
+barplot(Aroma,
+        main = "Average Aroma of Coffee Beans in Ethiopia from 2011-2017",
+        xlab = "Year",
+        ylab = "Aroma",
+        names.arg = c("2012", "2013", "2014", "2015", "2016", "2017"),
+        col = "#66FF99",
+        border = "#66FF99")
+```
+
+Next we look at a histogram showing the distribution of mean altitudes of Ethiopian coffee beans. There's only around $30$ datapoints here, but it appears to be somewhat skewed left. Most are grown at around $1750$ to $1950$ meters.
+
+```{r Ethiopia Altitude, echo=FALSE}
+ggplot(Ethiopia, aes(x=Altitude)) + 
+  geom_histogram(color="black", fill="cadetblue1", binwidth = 40) + ggtitle("Mean Altitudes of Ethiopia's Coffee Beans")
+```
+
+Ethiopia processes beans different than producers in other countries. Ethiopian beans are less commonly processed with a wash/wet method than other beans in the dataset.
+
+```{r Ethiopia process, echo=FALSE}
+
+Eth <- Coffee$Country == "Ethiopia"
+Washed <- Coffee$Method == "Washed / Wet"
+observed <- table(Eth,Washed)
+#Properlly label the contigency table 
+rownames(observed) <- c('Non-Ethiopia', 'Ethiopia')
+colnames(observed) <- c('Non Washed/Wet Method', 'Washed/Wet Method')
+observed
+#While Washed/wet Method is more common in general, Ethipian coffee is more frequently Not Washed/Wet
+
+```
+
+```{r Ethiopian chi sq}
+#confirm with Chi Sq test for independence 
+chisq.test(observed)
+```
+
+A $\chi^2$ test confirms what we can see from the table. The very low $p$-value leads us to reject the hypothesis that being from Ethiopia is independent of the processing method. 
+
+
+# Comparing Countries: do beans from Costa Rica and Guatemala tend to be grown at the same altitude?
+
+These two countries are geographically close. Is there a significant difference between the means of the mean altitude of each country's coffee crop? 
+
+```{r CR and Guat hist, echo=FALSE}
+GC <- subset(Coffee, Coffee$Country == "Guatemala" | Coffee$Country ==  "Costa Rica")
+#remove outliers
+outliers<-which(GC$Altitude>150000 | GC$Altitude<500)
+GC<-GC[-outliers,]
+hist(GC$Altitude[GC$Country=='Costa Rica'],breaks="FD",probability = TRUE,xlab="Altitude",main="Histogram - Costa Rica and Guatemala",col=rgb(1,0,0,0.5),xlim=c(750,2200))
+hist(GC$Altitude[GC$Country=='Guatemala'],breaks="FD", probability=TRUE,col=rgb(0,1,0,0.5),add=TRUE)
+```
+
+The distributions certainly seem different but the observed means are similar. (This is after removing outliers - Guatemala has some extremely high altitude plantations).
+
+```{r CR and Guat means}
+var(GC$Altitude[GC$Country=='Costa Rica'])
+var(GC$Altitude[GC$Country=="Guatemala"])
+var(GC$Altitude)
+#Calculate the observed altitude difference by country 
+GAvg <- sum(GC$Altitude*(GC$Country == "Guatemala"))/sum(GC$Country == "Guatemala"); GAvg
+CAvg <- sum(GC$Altitude*(GC$Country == "Costa Rica"))/sum(GC$Country == "Costa Rica"); CAvg
+observed <- GAvg - CAvg; observed     #With outliers removed, Costa Rican beans grow at a higher mean altitude
+```
+
+
+### Permutation test
+
+We now confirm how similar the observed mean altitudes are with a permutation test. We sample our data $10^4$ times and take the difference in the means to get a sampling distribution of the mean differences.
+
+```{r CR and Guat, echo=FALSE}
+#Now replace Countries with a random sample from the entire dataset and Repeat 10000 times
+N <- 100000
+diffs <- numeric(N)
+for (i in 1:N){
+  Country <- sample(GC$Country)
+  GAvg <- sum(GC$Altitude*(Country == "Guatemala"))/sum(Country == "Guatemala")
+  CAvg <- sum(GC$Altitude*(Country == "Costa Rica"))/sum(Country == "Costa Rica")
+  diffs[i] <- GAvg - CAvg    
+}
+
+hist(diffs, breaks = "FD")
+abline(v = observed, col = "red")
+```
+
+
+It certainly wouldn't be useful to distinguish groups of beans from these two countries based on their mean altitudes. If the beans in Guatemala and Costa Rica have their countries reassigned, only $4.7$% of those assignments would have differences within $-5.30$ and $5.30$ meters, showing that the mean altitudes are very similar. 
+
+
+```{r CR and Guat perm confidence interval}
+cilow <- (sum(diffs <= observed)+1)/(N+1); 
+cihigh <-(sum(diffs <= observed*-1)+1)/(N+1)
+cihigh-cilow
+```
+
+
+### Student T Test
+
+We expected to see a distribution of mean differences from permutation which closely resemble the $t$-distribution. However our distribution from the permutation test is skewed left.
+
+```{r CR and Guat skew}
+skewness(diffs) # -0.3 skewed left
+```
+
+A negative skew of this magnitude suggests that a $t$ test may not be appropriate but we perform one for comparison.
+
+```{r CR and Guat t dist, echo=FALSE}
+GC$Country<-factor(GC$Country)
+#dim(GC) #194 rows
+var.cg<-var(GC$Altitude[GC$Country=='Costa Rica'])
+var.g<-var(GC$Altitude[GC$Country=='Guatemala'])
+hist(diffs/sqrt((var.cg/43)+(var.g/151)), breaks = "FD",probability=TRUE, main="T-stat Histogram of Permutations with t density curve",xlab = "T statistic")
+curve(dt(x,192),add = TRUE, col = "purple")
+#Doesn't quite fit the permutation - permutation has a skew
+tstat<-observed/sqrt((var.cg/43)+(var.g/151));tstat #t statistic
+abline(v = tstat, col = "red")
+```
+
+Our $t$-statistic is $-0.108$ which corresponds to a $p$-value of of $0.457$
+
+```{r CR and Guat t test}
+pvalue.t<-pt(tstat,df=192);pvalue.t #.46
+```
+
+Despite the permutation distribution being different from the $t$ distribution, the $p$ values and result of the tests are similar. This is because the observed means are close, so we land near the middle of both the $t$ and permutation distributions. The differences would show up more with a more extreme observed value. 
+
+
+The permutation test is more appropriate here. The underlying data is fairly small, irregular, unbalanced and they have different variances which may cause slow or failed convergence to the $t$ distribution. One advantage of the $t$ test is that we can find the distribution of $t$ statistics created from underlying distributions with different variances. However this advantage does not outweigh its limitations here.
+
+### Confidence Interval for Guatemalan Mean Altitude
+
+Next we find a range for the mean of the mean altitudes of coffee grown in Guatemala.
+
+```{r Guat CI, echo=FALSE}
+samplemean <- mean(GC$Altitude[GC$Country=='Guatemala']); samplemean
+samplesd <- sd(GC$Altitude[GC$Country=='Guatemala']); 
+samplelength <- length(GC$Altitude[GC$Country=='Guatemala']);
+#Summary of Guatemala coffee beans' mean altitude: mean is 1468.115, sd is 326.3381 and sample size is 151.
+error <- qt(0.975,df=samplelength-1)*samplesd/sqrt(samplelength)
+left <- samplemean - error; left
+right <- samplemean + error; right
+```
+
+This shows that our population mean estimate of the mean altitudes for coffee in Guatemala lies within a $95$% confidence interval between $1414.29$ and $1518.15$ meters. Just a short hike!
+
+
+# Visualize the Performance of Coffees from Different Countries
+
+We compared three countries: China, Ethiopia, and the United States as they represent distinct geographical regions in the world of coffee been producers. We charted the average score of the ratings in five interesting categories of characteristics.
+
+```{r Radar, echo=FALSE}
+meancalculator <- function(countryname){
+  aroma <- mean(Coffee$Aroma[Coffee$Country == countryname])
+  flavor <- mean(Coffee$Flavor[Coffee$Country == countryname])
+  aftertaste <- mean(Coffee$Aftertaste[Coffee$Country == countryname])
+  acidity <- mean(Coffee$Acidity[Coffee$Country == countryname])
+  body <- mean(Coffee$Body[Coffee$Country == countryname])
+  result <- c(aroma, flavor, aftertaste, acidity, body)
+  return(result)
+}
+#Calculate max value in each catergory of characteristic 
+maxvaluearoma <- c(max(Coffee$Aroma[Coffee$Country == "China"]),max(Coffee$Aroma[Coffee$Country == "Ethiopia"]),max(Coffee$Aroma[Coffee$Country == "United States"]))
+maxvalueflavor <- c(max(Coffee$Flavor[Coffee$Country == "China"]),max(Coffee$Flavor[Coffee$Country == "Ethiopia"]),max(Coffee$Flavor[Coffee$Country == "United States"]))
+maxvalueaftertaste <- c(max(Coffee$Aftertaste[Coffee$Country == "China"]),max(Coffee$Aftertaste[Coffee$Country == "Ethiopia"]),max(Coffee$Aftertaste[Coffee$Country == "United States"]))
+maxvalueacidity <- c(max(Coffee$Acidity[Coffee$Country == "China"]),max(Coffee$Acidity[Coffee$Country == "Ethiopia"]),max(Coffee$Acidity[Coffee$Country == "United States"]))
+maxvaluebody <- c(max(Coffee$Body[Coffee$Country == "China"]),max(Coffee$Body[Coffee$Country == "Ethiopia"]),max(Coffee$Body[Coffee$Country == "United States"]))
+maxvalue <- c(maxvaluearoma, maxvalueflavor, maxvalueaftertaste, maxvalueacidity, maxvaluebody)
+
+#Calculate min value in each catergory of characteristic 
+minvaluearoma <- c(min(Coffee$Aroma[Coffee$Country == "China"]),min(Coffee$Aroma[Coffee$Country == "Ethiopia"]),min(Coffee$Aroma[Coffee$Country == "United States"]))
+minvalueflavor <- c(min(Coffee$Flavor[Coffee$Country == "China"]),min(Coffee$Flavor[Coffee$Country == "Ethiopia"]),min(Coffee$Flavor[Coffee$Country == "United States"]))
+minvalueaftertaste <- c(min(Coffee$Aftertaste[Coffee$Country == "China"]),min(Coffee$Aftertaste[Coffee$Country == "Ethiopia"]),min(Coffee$Aftertaste[Coffee$Country == "United States"]))
+minvalueacidity <- c(min(Coffee$Acidity[Coffee$Country == "China"]),min(Coffee$Acidity[Coffee$Country == "Ethiopia"]),min(Coffee$Acidity[Coffee$Country == "United States"]))
+minvaluebody <- c(min(Coffee$Body[Coffee$Country == "China"]),min(Coffee$Body[Coffee$Country == "Ethiopia"]),min(Coffee$Body[Coffee$Country == "United States"]))
+minvalue <- c(minvaluearoma, minvalueflavor, minvalueaftertaste, minvalueacidity, minvaluebody)
+
+#Clean up data
+CoffeeComp = rbind(meancalculator("China"),meancalculator("Ethiopia"),meancalculator("United States"))
+CoffeeComp = as.data.frame(CoffeeComp)
+colnames(CoffeeComp)=c("Aroma" , "Flavor" , "Aftertaste" , "Acidity" , "Body")
+rownames(CoffeeComp)=c("China", "Ethiopia","United States")
+CoffeeComp = rbind(maxvalue, minvalue, CoffeeComp)
+
+# Plot the radar chart, to study the feature of several countires for several numerical variables.
+colors_border=c( "brown1", "darkgoldenrod1" , "darkslategray1" )
+radarchart( CoffeeComp, axistype=0,
+            #custom polygon
+            pcol=colors_border, plwd=4 , plty=1,
+            #custom the grid
+            cglcol="grey", cglty=1, axislabcol="black", cglwd=0.8, 
+            #custom labels
+            vlcex=0.5
+)
+legend(x=0.7, y=1.3, legend = rownames(CoffeeComp[-c(1,2),]), bty = "n", pch=20 , col= colors_border,text.col = "darkgrey", cex=0.8, pt.cex=2)
+```
+
+Ethiopia and United States coffee beans have similar performance, while China has relatively lower scores in all five categories; especially flavor, body and aftertaste. 
+
+
+# Predicting Altitude and Country from Rating Scores
+
+From the previous analysis, it's clear that coffees from different countries have different characteristics. We explored how well we could predict the altitude and the country of origin from the ratings data. We compared Colombia and Guatemala, the countries with the largest number of beans in the dataset.
+
+```{r Col and Guat violin, echo=FALSE}
+GtCol<-Coffee[which(Coffee$Country == 'Colombia' | Coffee$Country == 'Guatemala'),c('Country','Aroma','Flavor','Aftertaste','Acidity','Body','Balance','Altitude')]
+
+#remove outlier altitudes
+outliers<-which(GtCol$Altitude>150000 | GtCol$Altitude<500)
+GtCol<-GtCol[-outliers,]
+
+#violin plots show some similar distributions between the two countries with Guatemala often having a larger range
+ggplot(melt(GtCol),aes(x=Country,y=value,colour=Country)) + geom_violin() + facet_wrap(~variable,nrow=3,scales="free")
+```
+
+The average of their ratings is similar but Guatemala tends to have more variance. It seems like aftertaste may be the best predictor of country as Colombia tends to score higher there.<br><br>Aftertaste, body and balance produce the most separation with country in the scatterplots but none of the attributes seem to correlate well with altitude.
+
+```{r Col and Guat scatter, echo=FALSE}
+#scatterplots suggest a lot of overlap between the countries but some areas of separation especially in body, aftertaste and balance
+pairs(GtCol,col=GtCol$Country)
+```
+
+In the Pearson correlation matrix, the rating values correlate with eachother but only weakly with Altitude
+``````{r Col and Guat corr, echo=FALSE}
+signif(cor(GtCol[,c('Aroma','Flavor','Aftertaste','Acidity','Body','Balance','Altitude')],method="pearson"),3)
+```
+
+
+### Principal Component Analysis
+
+We apply Principal Component Analysis to get uncorrelated components of maximum variation (leaving out altitude, which we will try to predict). As we saw above, we get pretty good separation by country but not by altitude.
+
+```{r PCA, echo=FALSE}
+# referenced 10D script
+A <- data.matrix(GtCol[-c(1,8)])
+M<-var(A);  #all on same scale already
+P<-eigen(M)$vectors
+PC<-A %*% P
+#check variance
+
+#attach to dataframe and plot first two components against eachother
+GtCol$PC1<-PC[,1]
+GtCol$PC2<-PC[,2]
+ggplot(GtCol, aes(PC1, PC2)) + geom_point(aes(color = Country)) +
+  theme(legend.position = "top") + ggtitle("PC1 vs PC2 by Country")
+
+ggplot(GtCol, aes(PC1, PC2)) + geom_point(aes(color = Altitude)) +
+  scale_color_gradient(low = "dark grey", high = "red") + theme(legend.position = "right") + ggtitle("PC1 vs PC2 by Altitude")
+```
+
+### Use the First Two Principal Componenets to Predict Altitude
+
+As expected, the result is not a good fit. We cannot accurately infer altitude with PC regression from these attributes.
+
+```{r OLS, echo=FALSE}
+#Find how well the first two PCs linearly predict Altitude. Referenced 10D script
+m1<-rep(1,length(GtCol$PC1))
+m2<-GtCol$PC1
+m3<-GtCol$PC2
+
+A <- cbind(m1,m2,m3)   
+B <- t(A)%*%A
+BInv <- solve(B)
+#projection matrix.
+P <- A%*%BInv%*%t(A)
+
+PredictAlt <- P%*%GtCol$Altitude   # project altitude onto subspace M
+coeff <- BInv%*%t(A)%*%GtCol$Altitude; coeff #OLS coefficients
+
+Resid <- GtCol$Altitude - coeff[1]*m1 - coeff[2]*m2 - coeff[3]*m3        #the residuals
+#Splitting up the variance to find R^2
+varObs <- var(GtCol$Altitude);  #variance of observations
+varPred <- var(PredictAlt);  #variance of predicted values
+varResid <-var(Resid);  #variance of residuals
+
+#fraction of variance explained by predictors 
+R2<-varPred/varObs; R2 #R2 value
+#very poor 
+```
+
+
+### Use the first principal component to predict country
+
+We attempt to classify $1$ as Colombia or $0$ as Guatemala with logistic regression, using $0.5$ as the threshold.
+
+```{r Logistic, echo=FALSE}
+#refered to 10D R script
+ColvsGt<-(as.numeric(GtCol$Country=="Colombia"))
+plot(PC[,1],ColvsGt)
+
+#copied from 10D script
+MLL<- function(alpha, beta) {
+  -sum( log( exp(alpha+beta*PC[,1])/(1+exp(alpha+beta*PC[,1])) )*ColvsGt
+        + log(1/(1+exp(alpha+beta*PC[,1])))*(1-ColvsGt) )
+}
+
+
+results<-mle(MLL, start = list(alpha = 0, beta = 0)) 
+results@coef
+curve( exp(results@coef[1]+results@coef[2]*x)/ (1+exp(results@coef[1]+results@coef[2]*x)),col = "blue", add=TRUE)
+abline(h=0.5)
+
+#Classify at the 0.5 level
+#Additional 10. Defining your own functions
+predLogistic<-function(x) {
+  exp(results@coef[[1]]+results@coef[[2]]*x)/ (1+exp(results@coef[[1]]+results@coef[[2]]*x))
+}
+
+N<-length(PC[,1])                                              
+Predictions<-numeric(N)
+for (i in 1:N) {
+  Predictions[i]<-predLogistic(PC[i,1])
+}
+Predictions<-Predictions>0.5
+contingency<-table(Predictions,ColvsGt);contingency
+#accuracy:
+(contingency[1,1]+contingency[2,2])/sum(contingency)
+```
+
+The accuracy is not bad and suggests that different coffee origins have different qualities.
+
+# Conclusion
+We discovered that the growing and processing conditions as well as the attribute ratings of coffee beans vary by country (though not much by year). We've learned a lot about coffee in different countries but there is still a lot more that can be done with this dataset to complete the picture.
+
